@@ -6,7 +6,7 @@ This project compares the performance of the A* search algorithm and Monte Carlo
 
 - **`planner_runner.py`**: This script compares the performance of A* and Pure Random Walk algorithms on the provided benchmarks. It calculates metrics like total runtime and makespan for each algorithm and generates a PDF file with the results.
 
-- **Benchmarks**: The project uses a variety of PDDL benchmarks to evaluate the performance of the two algorithms. These benchmarks are located in the `benchmarks/` directory.
+- **Benchmarks**: The project uses a variety of PDDL benchmarks to evaluate the performance of the two algorithms. These benchmarks are `(blocksworld, depot, gripper and logistics)`.
 
 - **Comparison PDF**: The results of the comparison, including runtime and makespan analysis, are documented in a PDF file included in the repository.
 
@@ -18,7 +18,7 @@ To run this project, you need to place the contents of this repository at the ro
 
 1. **Clone the Repository**: 
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/1DoraGON/PDDL4J_MRW.git
    ```
 2. **Move the Files**: 
    Move all files from this repository to the root directory of your PDDL4J installation.
