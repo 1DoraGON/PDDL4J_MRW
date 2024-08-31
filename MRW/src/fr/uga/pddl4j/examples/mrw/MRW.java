@@ -42,6 +42,8 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.ArrayList;
 import java.util.Random;
+import java.util.Map;
+import java.util.HashMap;
 
 
 @CommandLine.Command(name = "MRW",
@@ -186,9 +188,11 @@ public class MRW extends AbstractPlanner {
         LOGGER.info("* Starting MRW search \n");
         // Search a solution
         final long begin = System.currentTimeMillis();
-        // final Plan plan = this.astar(problem); // No error now because exception is declared in method signature
-        // final Plan plan = this.MRW(problem); // No error now because exception is declared in method signature
-        final Plan plan = this.MRW(problem); // No error now because exception is declared in method signature
+        // final Plan plan = this.astar(problem); 
+        // final Plan plan = this.MRW(problem); 
+        final Plan plan = this.MRWWithMHA(problem); 
+        // final Plan plan = this.MRWWithAdaptive(problem); 
+        // final Plan plan = this.MRWWithMDA(problem); 
         final long end = System.currentTimeMillis();
         // If a plan is found update the statistics of the planner
         // and log search information
@@ -396,6 +400,351 @@ public class MRW extends AbstractPlanner {
             // return null;
         } else {
             return this.extractPlan(smin, problem);
+        }
+    }
+    public Plan MRWWithAdaptive(Problem problem) throws ProblemNotSupportedException {
+        // Check if the problem is supported by the planner
+        if (!this.isSupported(problem)) {
+            throw new ProblemNotSupportedException("Problem not supported");
+        }
+
+        // Create an instance of the heuristic to guide the search
+        final StateHeuristic heuristic = StateHeuristic.getInstance(this.getHeuristic(), problem);
+
+        // Get the initial state from the planning problem
+        final State init = new State(problem.getInitialState());
+
+        // Initialize variables for the pure random walk
+        double hmin = Double.POSITIVE_INFINITY;
+        Node smin = null;
+
+        // Parameters for adapting the walk length and number
+        int currentLengthWalk = lengthWalk;
+        double acceptableProgressThreshold = 0.01; // This can be tuned
+        double alpha = 0.5; // Weight for acceptable progress, can be tuned
+        double APn = 0; // Acceptable progress accumulator
+
+        // Start the random walks
+        Node sinit = new Node(init, null, -1, 0, heuristic.estimate(init, problem.getGoal()));
+
+        for (int i = 1; i <= numWalk; i++) {
+            Node s = new Node(init, null, -1, 0, heuristic.estimate(init, problem.getGoal()));
+            double holdMin = hmin;
+
+            for (int j = 1; j <= currentLengthWalk; j++) {
+
+                // Get applicable actions for the current state
+                List<ActionIndexPair> applicableActions = new ArrayList<>();
+                for (int k = 0; k < problem.getActions().size(); k++) {
+                    Action a = problem.getActions().get(k);
+                    if (a.isApplicable(s)) {
+                        applicableActions.add(new ActionIndexPair(k, a));
+                    }
+                }
+
+                // If no actions are applicable, break out of the loop
+                if (applicableActions.isEmpty()) {
+                    break;
+                }
+
+                // Select a random action and apply it
+                int index = new Random().nextInt(applicableActions.size());
+                ActionIndexPair randomPair = applicableActions.get(index);
+                Action randomAction = randomPair.action;
+                int actionIndex = randomPair.index;
+
+                Node next = new Node(s);
+                for (ConditionalEffect ce : randomAction.getConditionalEffects()) {
+                    if (s.satisfy(ce.getCondition())) {
+                        next.apply(ce.getEffect());
+                    }
+                }
+
+                // Update the state to the new state after applying the action
+                next.setParent(s);
+                next.setAction(actionIndex);  // Set the correct action index
+                next.setHeuristic(heuristic.estimate(next, problem.getGoal()));
+
+                // If the goal is satisfied, return the plan
+                s = next;
+                if (s.satisfy(problem.getGoal())) {
+                    return this.extractPlan(s, problem);
+                }
+            }
+
+            // Update smin if this walk has found a better state
+            double h = heuristic.estimate(s, problem.getGoal());
+            if (h < hmin) {
+                smin = s;
+                hmin = h;
+            }
+
+            // Calculate progress for this walk
+            double progress = Math.max(0, holdMin - hmin);
+            APn = (1 - alpha) * APn + alpha * progress;
+
+            // If acceptable progress is met, stop the walks
+            if (APn > acceptableProgressThreshold) {
+                break;
+            }
+
+            // Adapt the length of the walk
+            if (progress < acceptableProgressThreshold) {
+                currentLengthWalk *= 1.5; // Increase the walk length if progress is slow
+            }
+        }
+
+        // If no better state was found, return null or an empty plan
+        if (smin == null) {
+            return this.extractPlan(sinit, problem);
+        } else {
+            return this.extractPlan(smin, problem);
+        }
+    }
+
+
+    public Plan MRWWithMDA(Problem problem) throws ProblemNotSupportedException {
+        // Check if the problem is supported by the planner
+        System.out.println("Hello, world! this is Monte Carlo PRW with MDA");
+        if (!this.isSupported(problem)) {
+            throw new ProblemNotSupportedException("Problem not supported");
+        }
+
+        // Create an instance of the heuristic to use to guide the search
+        final StateHeuristic heuristic = StateHeuristic.getInstance(this.getHeuristic(), problem);
+
+        // Get the initial state from the planning problem
+        final State init = new State(problem.getInitialState());
+
+        // Initialize variables for the pure random walk
+        double hmin = Double.POSITIVE_INFINITY;
+        Node smin = null;
+
+        // Initialize action value maps for MDA
+        Map<Action, Double> Q_mda = new HashMap<>();
+        Map<Action, Integer> S = new HashMap<>();
+        Map<Action, Integer> F = new HashMap<>();
+
+        // Start the random walks
+        Node sinit = new Node(init, null, -1, 0, heuristic.estimate(init, problem.getGoal()));
+
+        for (int i = 1; i <= numWalk; i++) {
+            Node s = new Node(init, null, -1, 0, heuristic.estimate(init, problem.getGoal()));
+            boolean walkSuccessful = false;
+            List<Action> actionsTaken = new ArrayList<>();
+
+            for (int j = 1; j <= lengthWalk; j++) {
+                // Get applicable actions for the current state
+                List<ActionIndexPair> applicableActions = new ArrayList<>();
+                for (int k = 0; k < problem.getActions().size(); k++) {
+                    Action a = problem.getActions().get(k);
+                    if (a.isApplicable(s)) {
+                        applicableActions.add(new ActionIndexPair(k, a));
+                    }
+                }
+
+                // If no actions are applicable, break out of the loop
+                if (applicableActions.isEmpty()) {
+                    break;
+                }
+
+                // Select an action based on MDA
+                ActionIndexPair selectedPair = selectActionWithMDA(applicableActions, Q_mda);
+                Action selectedAction = selectedPair.action;
+                int actionIndex = selectedPair.index;
+
+                Node next = new Node(s);
+                for (ConditionalEffect ce : selectedAction.getConditionalEffects()) {
+                    if (s.satisfy(ce.getCondition())) {
+                        next.apply(ce.getEffect());
+                    }
+                }
+
+                // Update the state to the new state after applying the action
+                next.setParent(s);
+                next.setAction(actionIndex);  // Set the correct action index
+                next.setHeuristic(heuristic.estimate(next, problem.getGoal()));
+
+                // Store actions taken during this walk
+                actionsTaken.add(selectedAction);
+
+                // If the goal is satisfied, return the plan
+                s = next;
+                if (s.satisfy(problem.getGoal())) {
+                    walkSuccessful = true;
+                    return this.extractPlan(s, problem);
+                }
+            }
+
+            // Update MDA action values after the walk
+            updateMDAValues(actionsTaken, walkSuccessful, Q_mda, S, F);
+
+            // Update smin if this walk has found a better state
+            double h = heuristic.estimate(s, problem.getGoal());
+            if (h < hmin) {
+                smin = s;
+                hmin = h;
+            }
+        }
+
+        // Return the best plan found or null if none was found
+        return (smin == null) ? this.extractPlan(sinit, problem) : this.extractPlan(smin, problem);
+    }
+
+    // Select an action based on MDA
+    private ActionIndexPair selectActionWithMDA(List<ActionIndexPair> applicableActions, Map<Action, Double> Q_mda) {
+        double sumProbabilities = 0.0;
+        List<Double> probabilities = new ArrayList<>();
+
+        for (ActionIndexPair pair : applicableActions) {
+            double qValue = Q_mda.getOrDefault(pair.action, 0.0);
+            double probability = Math.exp(qValue);  // Gibbs sampling with τ=1
+            probabilities.add(probability);
+            sumProbabilities += probability;
+        }
+
+        double r = new Random().nextDouble() * sumProbabilities;
+        double cumulativeProbability = 0.0;
+
+        for (int i = 0; i < applicableActions.size(); i++) {
+            cumulativeProbability += probabilities.get(i);
+            if (r <= cumulativeProbability) {
+                return applicableActions.get(i);
+            }
+        }
+
+        return applicableActions.get(0);  // Fallback in case of numerical issues
+    }
+
+    // Update MDA action values
+    private void updateMDAValues(List<Action> actionsTaken, boolean walkSuccessful, Map<Action, Double> Q_mda, Map<Action, Integer> S, Map<Action, Integer> F) {
+        for (Action action : actionsTaken) {
+            F.put(action, F.getOrDefault(action, 0) + (walkSuccessful ? 0 : 1));
+            S.put(action, S.getOrDefault(action, 0) + (walkSuccessful ? 1 : 0));
+
+            int successes = S.getOrDefault(action, 0);
+            int failures = F.getOrDefault(action, 0);
+
+            if (successes + failures > 0) {
+                Q_mda.put(action, -(double) failures / (successes + failures));
+            }
+        }
+    }
+
+    public Plan MRWWithMHA(Problem problem) throws ProblemNotSupportedException {
+        // Check if the problem is supported by the planner
+        System.out.println("Hello, world! this is Monte Carlo PRW with MHA");
+        if (!this.isSupported(problem)) {
+            throw new ProblemNotSupportedException("Problem not supported");
+        }
+
+        // Create an instance of the heuristic to use to guide the search
+        final StateHeuristic heuristic = StateHeuristic.getInstance(this.getHeuristic(), problem);
+
+        // Get the initial state from the planning problem
+        final State init = new State(problem.getInitialState());
+
+        // Initialize variables for the pure random walk
+        double hmin = Double.POSITIVE_INFINITY;
+        Node smin = null;
+
+        // Initialize action value maps for MHA
+        Map<Action, Double> Q_mha = new HashMap<>();
+
+        // Start the random walks
+        Node sinit = new Node(init, null, -1, 0, heuristic.estimate(init, problem.getGoal()));
+
+        for (int i = 1; i <= numWalk; i++) {
+            Node s = new Node(init, null, -1, 0, heuristic.estimate(init, problem.getGoal()));
+            List<Action> actionsTaken = new ArrayList<>();
+
+            for (int j = 1; j <= lengthWalk; j++) {
+                // Get applicable actions for the current state
+                List<ActionIndexPair> applicableActions = new ArrayList<>();
+                for (int k = 0; k < problem.getActions().size(); k++) {
+                    Action a = problem.getActions().get(k);
+                    if (a.isApplicable(s)) {
+                        applicableActions.add(new ActionIndexPair(k, a));
+                    }
+                }
+
+                // If no actions are applicable, break out of the loop
+                if (applicableActions.isEmpty()) {
+                    break;
+                }
+
+                // Select an action based on MHA
+                ActionIndexPair selectedPair = selectActionWithMHA(applicableActions, Q_mha);
+                Action selectedAction = selectedPair.action;
+                int actionIndex = selectedPair.index;
+
+                Node next = new Node(s);
+                for (ConditionalEffect ce : selectedAction.getConditionalEffects()) {
+                    if (s.satisfy(ce.getCondition())) {
+                        next.apply(ce.getEffect());
+                    }
+                }
+
+                // Update the state to the new state after applying the action
+                next.setParent(s);
+                next.setAction(actionIndex);  // Set the correct action index
+                next.setHeuristic(heuristic.estimate(next, problem.getGoal()));
+
+                // Store actions taken during this walk
+                actionsTaken.add(selectedAction);
+
+                // If the goal is satisfied, return the plan
+                s = next;
+                if (s.satisfy(problem.getGoal())) {
+                    updateMHAValues(actionsTaken, Q_mha);
+                    return this.extractPlan(s, problem);
+                }
+            }
+
+            // Update MHA action values at the end of the walk
+            updateMHAValues(actionsTaken, Q_mha);
+
+            // Update smin if this walk has found a better state
+            double h = heuristic.estimate(s, problem.getGoal());
+            if (h < hmin) {
+                smin = s;
+                hmin = h;
+            }
+        }
+
+        // Return the best plan found or null if none was found
+        return (smin == null) ? this.extractPlan(sinit, problem) : this.extractPlan(smin, problem);
+    }
+
+    // Select an action based on MHA
+    private ActionIndexPair selectActionWithMHA(List<ActionIndexPair> applicableActions, Map<Action, Double> Q_mha) {
+        double sumProbabilities = 0.0;
+        List<Double> probabilities = new ArrayList<>();
+
+        for (ActionIndexPair pair : applicableActions) {
+            double qValue = Q_mha.getOrDefault(pair.action, 0.0);
+            double probability = Math.exp(qValue);  // Gibbs sampling with τ=1
+            probabilities.add(probability);
+            sumProbabilities += probability;
+        }
+
+        double r = new Random().nextDouble() * sumProbabilities;
+        double cumulativeProbability = 0.0;
+
+        for (int i = 0; i < applicableActions.size(); i++) {
+            cumulativeProbability += probabilities.get(i);
+            if (r <= cumulativeProbability) {
+                return applicableActions.get(i);
+            }
+        }
+
+        return applicableActions.get(0);  // Fallback in case of numerical issues
+    }
+
+    // Update MHA action values
+    private void updateMHAValues(List<Action> actionsTaken, Map<Action, Double> Q_mha) {
+        for (Action action : actionsTaken) {
+            Q_mha.put(action, Q_mha.getOrDefault(action, 0.0) + 1.0);
         }
     }
 
